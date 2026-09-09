@@ -32,7 +32,7 @@ report_file     <- "resources/ComprehensiveReportTab.txt"
 website_file    <- "resources/waterboards-website-links.txt"
 sdrive_file     <- "resources/s-drive-paths.txt"
 output_file     <- "ref_index.csv"
-sdrive_prefix   <- "S:DWQ/DIV/WQSA/Integrated Report"
+sdrive_prefix   <- "S:/DWQ/DIV/WQSA/Integrated Report"
 
 # ---- 1. Extract unique reference numbers from report ----
 report <- fread(report_file, sep = "\t", header = TRUE, quote = "\"",
