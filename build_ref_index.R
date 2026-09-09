@@ -1,6 +1,6 @@
 # author: John.Inman@waterboards.ca.gov with AI coding agent
 # model: deepseek/deepseek-v4-flash
-# date updated: 2026-09-08
+# date updated: 2026-09-09
 #
 # build_ref_index.R
 #
@@ -24,7 +24,7 @@ suppressPackageStartupMessages(library(stringr))
 suppressPackageStartupMessages(library(purrr))
 suppressPackageStartupMessages(library(data.table))
 suppressPackageStartupMessages(library(httr))
-library(parallel)
+suppressPackageStartupMessages(library(future.apply))
 
 report_file     <- "resources/ComprehensiveReportTab.txt"
 website_file    <- "resources/waterboards-website-links.txt"
@@ -76,12 +76,10 @@ check_url <- function(url, timeout = 10) {
   }, error = function(e) FALSE)
 }
 
-# Parallel check: use available cores minus 1, max 8.
-n_cores <- min(detectCores() - 1, 8, na.rm = TRUE)
-if (n_cores < 1) n_cores <- 1
-
-working <- mclapply(urls_to_check$url, check_url, mc.cores = n_cores,
-                    mc.preschedule = TRUE) |>
+# Parallel check across all available cores.
+plan(multisession)
+working <- future_lapply(urls_to_check$url, check_url,
+                         future.seed = TRUE) |>
   unlist()
 
 urls_to_check$working <- working
