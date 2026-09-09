@@ -128,12 +128,14 @@ select_best_sdrive_path <- function(df) {
   }
 
   # No tiebreaker — just take the first row (original file order).
+  # (first row will have fewest path components because s-drive-paths.txt
+  # is just fd output)
   df |> slice_head(n = 1)
 }
 
 sdrive_best <- sdrive_paths |>
   group_by(ref_number) |>
-  group_modify(\(x) select_best_sdrive_path(x)) |>
+  group_modify(\(x, ...) select_best_sdrive_path(x)) |>
   ungroup() |>
   mutate(source = file.path(sdrive_prefix, rel_path)) |>
   select(ref_number, source)
@@ -152,7 +154,8 @@ ref_index <- all_refs |>
   mutate(
     source = coalesce(source.web, source.sdrive)
   ) |>
-  select(ref_number, source)
+  select(ref_number, source) |>
+  arrange(as.numeric(ref_number))
 
 # ---- 6. Write output ----
 fwrite(ref_index, output_file, na = "")
