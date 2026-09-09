@@ -4,8 +4,7 @@
 #
 # build_ref_index.R
 #
-# Reads the Comprehensive Report, extracts unique reference numbers from
-# column 51 ("Data Used to Assess Water Quality References"), and for
+# Reads the Comprehensive Report, extracts unique reference numbers from column 51 ("Data Used to Assess Water Quality References"), and for
 # each ref number:
 #   1. Checks waterboards-website-links.txt for a matching URL.
 #   2. If URL exists and is a working link (HTTP 200), uses the URL.
@@ -20,13 +19,15 @@
 # For refs with tied s-drive candidates, the first is used in output
 # but all are reported in the console.
 
-suppressPackageStartupMessages(library(dplyr))
-suppressPackageStartupMessages(library(tidyr))
-suppressPackageStartupMessages(library(stringr))
-suppressPackageStartupMessages(library(purrr))
-suppressPackageStartupMessages(library(fs))
-suppressPackageStartupMessages(library(data.table))
-suppressPackageStartupMessages(library(httr))
+suppressPackageStartupMessages({
+    library(dplyr)
+    library(tidyr)
+    library(stringr)
+    library(purrr)
+    library(fs)
+    library(data.table)
+    library(curl)
+})
 
 report_file     <- "resources/ComprehensiveReportTab.txt"
 website_file    <- "resources/waterboards-website-links.txt"
@@ -34,204 +35,90 @@ sdrive_file     <- "resources/s-drive-paths.txt"
 output_file     <- "ref_index.csv"
 sdrive_prefix   <- "S:/DWQ/DIV/WQSA/Integrated Report"
 
-# ---- 1. Extract unique reference numbers from report ----
-report <- fread(report_file, sep = "\t", header = TRUE, quote = "\"",
-                colClasses = "character", na.strings = "")
-
-ref_nums <- report[[51]] |>
-  str_replace_all('"', "") |>
-  str_split("\\s*,\\s*") |>
-  unlist() |>
-  str_trim() |>
-  unique()
-
-ref_nums <- ref_nums[ref_nums != "" & !is.na(ref_nums)]
-
-# ---- 2. Build website links lookup ----
-website_lines <- readLines(website_file, warn = FALSE)
-
-parse_website_url <- function(url) {
-  m <- str_match(url, regex("/ref(\\d+)\\.\\w+$", ignore_case = TRUE))
-  if (is.na(m[1, 1])) return(NULL)
-  tibble(ref_number = m[1, 2], url = url)
+# ---- 1. Get ref numbers in comp report ----
+if (!exists(".report")) {
+        .report <- fread(report_file, 
+                         sep = "\t", 
+                         header = TRUE, 
+                         quote = "\"",
+                         colClasses = "character", 
+                         na.strings = "") |>
+        as_tibble()
 }
 
-website_lookup <- map_dfr(website_lines, parse_website_url)
+comp_refs <- .report  |>
+    select(ref_number = `Data Used to Assess Water Quality References`) |>
+    filter(!is.na(ref_number), ref_number != "") |>
+    separate_longer_delim(ref_number, ", ") |>
+    distinct(ref_number)
 
-# For refs with multiple URLs, keep the first one (they all point to same
-# file on different regional pages; any one will work).
-website_lookup <- website_lookup |>
-  group_by(ref_number) |>
-  slice_head(n = 1) |>
-  ungroup()
+# ---- 2. Get ref urls on website ----
+website_refs <- 
+    tibble(source = readLines(website_file, warn = FALSE)) |>
+    mutate(ref_number = str_extract(source, "/ref(\\d+)\\.\\w+$", group = 1)) |>
+    group_by(ref_number) |>
+    slice_head(n = 1) |>
+    ungroup() |>
+    # Only download refs that actually appear in the report.
+    inner_join(comp_refs, by = "ref_number")
 
-# ---- 3. Check which website links are alive (HTTP 200) ----
-# Only check refs that actually appear in the report.
-refs_to_check <- intersect(ref_nums, website_lookup$ref_number)
-urls_to_check <- website_lookup |>
-  filter(ref_number %in% refs_to_check)
+# ---- 3. Download refs ----
 
-check_url <- function(url, timeout = 10) {
-  tryCatch({
-    resp <- HEAD(url, timeout(timeout), user_agent("Mozilla/5.0"))
-    resp$status_code == 200
-  }, error = function(e) FALSE)
-}
+dest_dir <- path("refs", "original")
+dir_create(dest_dir)
+dest_files <- path(dest_dir, path_file(website_refs$source))
 
-working <- map_lgl(urls_to_check$url, check_url)
+results <- multi_download(
+    urls = website_refs$source,
+    destfiles = dest_files,
+    resume = TRUE,
+    progress = TRUE
+)
 
-urls_to_check$working <- working
+downloaded_files <- 
+    tibble(file = dir_ls("./refs", recurse = TRUE, type = "file")) |>
+    mutate(ref_number = str_extract(file, "/ref(\\d+)\\.\\w+$", group = 1),
+           size = file_info(file)$size) |>
+    filter(size > 0)
 
-# Build final website source mapping
-website_source <- urls_to_check |>
-  filter(working) |>
-  select(ref_number, source = url)
+# only keep refs that actually downloaded (they all did)
+website_refs <- semi_join(website_refs, downloaded_files, by = "ref_number")
 
 # ---- 4. Build s-drive paths fallback ----
-sdrive_lines <- readLines(sdrive_file, warn = FALSE)
-
-# Pattern: path ending with /ref{NNNN}.{ext} (case-insensitive)
-pattern <- "(?i)^(.+)/ref(\\d+)\\.([a-z0-9]+)$"
-
-parse_sdrive_line <- function(line) {
-  m <- str_match(line, pattern)
-  if (is.na(m[1, 1])) return(NULL)
-  tibble(
-    rel_path    = m[1, 1],
-    ref_number  = m[1, 3],
-    extension   = str_to_lower(m[1, 4])
-  )
-}
-
-sdrive_paths <- map_dfr(sdrive_lines, parse_sdrive_line)
 
 # Build best path per ref:
 #   1. Prefer paths starting with ^References/
 #   2. Prefer .zip files over other extensions
 #   3. Remaining ties broken by taking first option (original file order).
-select_best_sdrive_path <- function(df) {
-  if (nrow(df) == 0) return(NULL)
-
+select_best_path <- function(df) {
   # Does any path start with "References/"?
-  has_ref_path <- any(str_detect(df$rel_path, "^References/"))
+  has_ref_path <- any(str_detect(df$source, "^References/"))
   if (has_ref_path) {
-    df <- df |> filter(str_detect(rel_path, "^References/"))
+    df <- df |> 
+        filter(str_detect(source, "^References/"))
   }
-
-  has_zip <- any(df$extension == "zip")
+  has_zip <- any(str_detect(df$source, "zip"))
   if (has_zip) {
-    df <- df |> filter(extension == "zip")
+    df <- df |> 
+        filter(str_detect(source, "zip"))
   }
-
-  # No tiebreaker — just take the first row (original file order).
-  # (first row will have fewest path components because s-drive-paths.txt
-  # is just fd output)
-  df |> slice_head(n = 1)
+  # take the first of remaining rows (original file order).
+  df |>  
+      slice_head(n = 1)
 }
 
-sdrive_best <- sdrive_paths |>
-  group_by(ref_number) |>
-  group_modify(\(x, ...) select_best_sdrive_path(x)) |>
-  ungroup() |>
-  mutate(source = path(sdrive_prefix, rel_path)) |>
-  select(ref_number, source)
+# Pattern: path ending with /ref{NNNN}.{ext} (case-insensitive)
+sdrive_refs <- 
+    tibble(source = readLines(sdrive_file, warn = FALSE)) |>
+    mutate(ref_number = str_extract(source, "/ref(\\d+)\\.\\w+$", group = 1)) |>
+    filter(!is.na(ref_number)) |>
+    group_by(ref_number) |>
+    group_modify(\(x, ...) select_best_path(x)) |>
+    ungroup() |>
+    mutate(source = path(sdrive_prefix, source)) |>
+    inner_join(comp_refs, by = "ref_number") |>
+    anti_join(website_refs, by = "ref_number")
 
-# ---- 5. Combine website + s-drive sources ----
-# For each ref in the report:
-#   - Use website URL if available and working
-#   - Otherwise use s-drive path if available
-#   - Otherwise mark as "not_found"
-
-all_refs <- tibble(ref_number = ref_nums)
-
-ref_index <- all_refs |>
-  left_join(website_source, by = "ref_number") |>
-  left_join(sdrive_best, by = "ref_number", suffix = c(".web", ".sdrive")) |>
-  mutate(
-    source = coalesce(source.web, source.sdrive)
-  ) |>
-  select(ref_number, source) |>
-  arrange(as.numeric(ref_number))
-
-# ---- 6. Download/copy reference files ----
-# Downloads website sources via HTTP or copies s-drive paths if locally
-# accessible.  Each file lands in refs/<ref_number>/original/.
-# Already-downloaded files are skipped.
-#
-# Returns NA on success or a short message explaining the failure.
-
-transfer_file <- function(ref_number, source) {
-
-  # --- prepare destination directory ---
-  dest_dir <- path("refs", ref_number, "original")
-  dir_create(dest_dir)
-
-  # --- no known source for this ref ---
-  if (is.na(source) || source == "") {
-    return("no source")
-  }
-
-  # --- work out the destination file path ---
-  dest_file <- path(dest_dir, path_file(source))
-
-  # --- already downloaded; nothing to do ---
-  if (file_exists(dest_file)) {
-    return(NA)
-  }
-
-  # --- HTTP source: download from the web ---
-  if (str_detect(source, "^https://")) {
-    download_ok <- tryCatch({
-      GET(source,
-          write_disk(dest_file, overwrite = TRUE),
-          user_agent("Mozilla/5.0"),
-          timeout(60))
-      TRUE
-    }, error = function(e) FALSE)
-
-    if (!download_ok) {
-      return("download failed")
-    }
-    return(NA)
-  }
-
-  # --- S-drive source: copy from the network path ---
-  if (file_exists(source)) {
-    file_copy(source, dest_file, overwrite = TRUE)
-    return(NA)
-  }
-
-  # --- s-drive path does not exist on this machine ---
-  "s-drive not accessible"
-}
-
-status <- map2_chr(ref_index$ref_number, ref_index$source,
-                   transfer_file)
-
-# ---- 6b. Report any refs that failed to transfer ----
-failures <- ref_index |>
-  mutate(status = status) |>
-  filter(!is.na(status))
-
-if (nrow(failures) > 0) {
-  cat("The following refs could not be transferred:\n")
-  walk2(failures$ref_number, failures$status,
-        \(r, s) cat("  ref", r, "—", s, "\n"))
-}
-
-# ---- 7. Extract zip files ----
-# For any downloaded file that is a zip archive, extract it into
-# refs/<ref_number>/extracted/.
-
-zip_files <- dir_ls(path("refs"), recurse = TRUE,
-                    regexp = "\\.zip$", type = "file")
-
-walk(zip_files, \(f) {
-  ref_dir <- path_dir(path_dir(f))
-  extract_dir <- path(ref_dir, "extracted")
-  dir_create(extract_dir)
-  unzip(f, exdir = extract_dir)
-})
-
-# ---- 8. Write output ----
-fwrite(ref_index, output_file, na = "")
+select(sdrive_refs, path = source) |> 
+mutate(new_path = path("refs", "original", path_file(path))) |>
+pmap(file_copy)
