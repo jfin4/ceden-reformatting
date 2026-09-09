@@ -15,6 +15,7 @@
 #      reported rather than silently tiebroken.
 #
 # Output: ./ref_index.csv with columns: ref_number, source
+# Refs are downloaded/copied to ./refs/<ref_number>/original/.
 # For refs with tied s-drive candidates, the first is used in output
 # but all are reported in the console.
 
@@ -22,6 +23,7 @@ suppressPackageStartupMessages(library(dplyr))
 suppressPackageStartupMessages(library(tidyr))
 suppressPackageStartupMessages(library(stringr))
 suppressPackageStartupMessages(library(purrr))
+suppressPackageStartupMessages(library(fs))
 suppressPackageStartupMessages(library(data.table))
 suppressPackageStartupMessages(library(httr))
 
@@ -75,8 +77,7 @@ check_url <- function(url, timeout = 10) {
   }, error = function(e) FALSE)
 }
 
-working <- lapply(urls_to_check$url, check_url) |>
-  unlist()
+working <- map_lgl(urls_to_check$url, check_url)
 
 urls_to_check$working <- working
 
@@ -131,7 +132,7 @@ sdrive_best <- sdrive_paths |>
   group_by(ref_number) |>
   group_modify(\(x, ...) select_best_sdrive_path(x)) |>
   ungroup() |>
-  mutate(source = file.path(sdrive_prefix, rel_path)) |>
+  mutate(source = path(sdrive_prefix, rel_path)) |>
   select(ref_number, source)
 
 # ---- 5. Combine website + s-drive sources ----
@@ -151,5 +152,40 @@ ref_index <- all_refs |>
   select(ref_number, source) |>
   arrange(as.numeric(ref_number))
 
-# ---- 6. Write output ----
+# ---- 6. Download/copy reference files ----
+# Download website sources via HTTP; try to copy s-drive paths if
+# locally accessible. Place each file in refs/<ref_number>/original/.
+# Skip if file already exists.
+
+transfer_file <- function(ref_number, source) {
+  dest_dir <- path("refs", ref_number, "original")
+  dir_create(dest_dir)
+
+  if (is.na(source) || source == "") return()
+
+  dest_file <- path(dest_dir, path_file(source))
+
+  # Skip if already downloaded
+  if (file_exists(dest_file)) return()
+
+  if (str_detect(source, "^https://")) {
+    tryCatch(
+      GET(source,
+          write_disk(dest_file, overwrite = TRUE),
+          user_agent("Mozilla/5.0"),
+          timeout(60)),
+      error = function(e) NULL
+    )
+    return()
+  }
+
+  # S-drive path try to copy if the path exists locally
+  if (file_exists(source)) {
+    file_copy(source, dest_file, overwrite = TRUE)
+  }
+}
+
+walk2(ref_index$ref_number, ref_index$source, transfer_file)
+
+# ---- 7. Write output ----
 fwrite(ref_index, output_file, na = "")

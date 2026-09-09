@@ -51,6 +51,10 @@ In general, follow the applicable Google style guide per language:
     - tidyverse (dplyr, tidyr, stringr) for manipulation
     - silent scripts (no `cat()`, `print()`, `message()`) unless instructed
     - `\(x)` compact lambdas, not `~ .x` shortcuts
+    - `fs` for file system operations (`dir_create`,
+      `file_exists`, `file_copy`, `path`, `path_file`)
+    - `purrr` over base R loops: `map_*` for transformations,
+      `walk`/`walk2` for side effects, `map_dfr` for row-binding
 - **JS/TS** — [Google TypeScript Style Guide](https://google.github.io/styleguide/tsguide.html)
 - **SQL** — Uppercase keywords
     - 2-space indent
