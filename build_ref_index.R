@@ -15,7 +15,8 @@
 #      reported rather than silently tiebroken.
 #
 # Output: ./ref_index.csv with columns: ref_number, source
-# Refs are downloaded/copied to ./refs/<ref_number>/original/.
+# Refs are downloaded/copied to ./refs/<ref_number>/original/; zip
+# archives are extracted to ./refs/<ref_number>/extracted/.
 # For refs with tied s-drive candidates, the first is used in output
 # but all are reported in the console.
 
@@ -161,31 +162,63 @@ transfer_file <- function(ref_number, source) {
   dest_dir <- path("refs", ref_number, "original")
   dir_create(dest_dir)
 
-  if (is.na(source) || source == "") return()
+  if (is.na(source) || source == "") {
+    return("no source")
+  }
 
   dest_file <- path(dest_dir, path_file(source))
 
   # Skip if already downloaded
-  if (file_exists(dest_file)) return()
+  if (file_exists(dest_file)) return(NA)
 
   if (str_detect(source, "^https://")) {
-    tryCatch(
+    ok <- tryCatch({
       GET(source,
           write_disk(dest_file, overwrite = TRUE),
           user_agent("Mozilla/5.0"),
-          timeout(60)),
-      error = function(e) NULL
-    )
-    return()
+          timeout(60))
+      TRUE
+    }, error = function(e) FALSE)
+    if (!ok) return("download failed")
+    return(NA)
   }
 
   # S-drive path try to copy if the path exists locally
   if (file_exists(source)) {
     file_copy(source, dest_file, overwrite = TRUE)
+    return(NA)
   }
+
+  "s-drive not accessible"
 }
 
-walk2(ref_index$ref_number, ref_index$source, transfer_file)
+status <- map2_chr(ref_index$ref_number, ref_index$source,
+                    transfer_file)
 
-# ---- 7. Write output ----
+# Report failures
+failures <- ref_index |>
+  mutate(status = status) |>
+  filter(!is.na(status))
+
+if (nrow(failures) > 0) {
+  cat("The following refs could not be transferred:\n")
+  walk2(failures$ref_number, failures$status,
+        \(r, s) cat("  ref", r, "—", s, "\n"))
+}
+
+# ---- 7. Extract zip files ----
+# For any downloaded file that is a zip archive, extract it into
+# refs/<ref_number>/extracted/.
+
+zip_files <- dir_ls(path("refs"), recurse = TRUE,
+                    regexp = "\\.zip$", type = "file")
+
+walk(zip_files, \(f) {
+  ref_dir <- path_dir(path_dir(f))
+  extract_dir <- path(ref_dir, "extracted")
+  dir_create(extract_dir)
+  unzip(f, exdir = extract_dir)
+})
+
+# ---- 8. Write output ----
 fwrite(ref_index, output_file, na = "")
