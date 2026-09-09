@@ -1,0 +1,5 @@
+resources/*
+refs/*
+ref_index.csv
+.*
+!.gitignore
