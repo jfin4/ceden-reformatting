@@ -154,48 +154,61 @@ ref_index <- all_refs |>
   arrange(as.numeric(ref_number))
 
 # ---- 6. Download/copy reference files ----
-# Download website sources via HTTP; try to copy s-drive paths if
-# locally accessible. Place each file in refs/<ref_number>/original/.
-# Skip if file already exists.
+# Downloads website sources via HTTP or copies s-drive paths if locally
+# accessible.  Each file lands in refs/<ref_number>/original/.
+# Already-downloaded files are skipped.
+#
+# Returns NA on success or a short message explaining the failure.
 
 transfer_file <- function(ref_number, source) {
+
+  # --- prepare destination directory ---
   dest_dir <- path("refs", ref_number, "original")
   dir_create(dest_dir)
 
+  # --- no known source for this ref ---
   if (is.na(source) || source == "") {
     return("no source")
   }
 
+  # --- work out the destination file path ---
   dest_file <- path(dest_dir, path_file(source))
 
-  # Skip if already downloaded
-  if (file_exists(dest_file)) return(NA)
+  # --- already downloaded; nothing to do ---
+  if (file_exists(dest_file)) {
+    return(NA)
+  }
 
+  # --- HTTP source: download from the web ---
   if (str_detect(source, "^https://")) {
-    ok <- tryCatch({
+    download_ok <- tryCatch({
       GET(source,
           write_disk(dest_file, overwrite = TRUE),
           user_agent("Mozilla/5.0"),
           timeout(60))
       TRUE
     }, error = function(e) FALSE)
-    if (!ok) return("download failed")
+
+    if (!download_ok) {
+      return("download failed")
+    }
     return(NA)
   }
 
-  # S-drive path try to copy if the path exists locally
+  # --- S-drive source: copy from the network path ---
   if (file_exists(source)) {
     file_copy(source, dest_file, overwrite = TRUE)
     return(NA)
   }
 
+  # --- s-drive path does not exist on this machine ---
   "s-drive not accessible"
 }
 
 status <- map2_chr(ref_index$ref_number, ref_index$source,
-                    transfer_file)
+                   transfer_file)
 
-# Report failures
+# ---- 6b. Report any refs that failed to transfer ----
 failures <- ref_index |>
   mutate(status = status) |>
   filter(!is.na(status))
