@@ -24,7 +24,6 @@ suppressPackageStartupMessages(library(stringr))
 suppressPackageStartupMessages(library(purrr))
 suppressPackageStartupMessages(library(data.table))
 suppressPackageStartupMessages(library(httr))
-suppressPackageStartupMessages(library(future.apply))
 
 report_file     <- "resources/ComprehensiveReportTab.txt"
 website_file    <- "resources/waterboards-website-links.txt"
@@ -76,10 +75,7 @@ check_url <- function(url, timeout = 10) {
   }, error = function(e) FALSE)
 }
 
-# Parallel check across all available cores.
-plan(multisession)
-working <- future_lapply(urls_to_check$url, check_url,
-                         future.seed = TRUE) |>
+working <- lapply(urls_to_check$url, check_url) |>
   unlist()
 
 urls_to_check$working <- working
