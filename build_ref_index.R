@@ -11,7 +11,7 @@
 #      export from the Integrated Report database).
 #   2. Find the corresponding files on the S: drive (pre-indexed in
 #      sdrive-paths.csv) whose names match /ref<number>.<ext>.
-#   3. Copy those files into a local "refs/" directory tree that mirrors the
+#   3. Copy those files into a local directory tree that mirrors the
 #      S: drive folder structure.
 #
 # The S: drive file list was generated once (offline) because the network
@@ -31,7 +31,7 @@ sdrive_file  <- "resources/sdrive-paths.csv"
 output_file  <- "ref_index.csv"
 
 sdrive_root  <- "S:/DWQ/DIV/WQSA/Integrated Report"
-local_root   <- "refs"
+local_root   <- "sdrive-mirror"
 
 # -- Helpers -----------------------------------------------------------------
 
@@ -75,7 +75,7 @@ sdrive_paths <- fread(sdrive_file, sep = ",") |>
 # (e.g.,   .../some/path/ref5891.xlsx).  We extract the numeric portion and
 # join against the report's reference numbers.
 
-matched_files <- sdrive_paths |>
+ref_index <- sdrive_paths |>
     mutate(ref_number = str_extract(
         str_to_lower(path),           # case-insensitive match
         "/ref(\\d+)\\.\\w+$",
@@ -90,12 +90,17 @@ matched_files <- sdrive_paths |>
 #   - Create the destination directory under refs/ (mirroring S: drive path)
 #   - Copy the file, overwriting any previous copy
 
-matched_files |>
+ref_index |>
     mutate(
         src  = path,
         dest = str_replace(path, sdrive_root, local_root)
     ) |>
     pwalk(function(src, dest, ...) {
         dir_create(path_dir(dest))
-        file_copy(src, dest, overwrite = TRUE)
+        if (!file_exists(dest)) file.copy(src, dest, copy.date = TRUE)
     })
+
+# Sys.setFileTime(dest, file_info(src)$modification_time)
+
+# -- Step 5: Write ref index ------------------------------------------------
+# fwrite(ref_index, outfile)

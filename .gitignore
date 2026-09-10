@@ -1,4 +1,5 @@
 resources/ComprehensiveReportTab.txt
 refs/*
+sdrive-mirror/*
 .*
 !.gitignore
