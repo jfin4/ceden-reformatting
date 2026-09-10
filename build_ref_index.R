@@ -91,16 +91,25 @@ ref_index <- sdrive_paths |>
 #   - Copy the file, overwriting any previous copy
 
 ref_index |>
-    mutate(
-        src  = path,
-        dest = str_replace(path, sdrive_root, local_root)
-    ) |>
-    pwalk(function(src, dest, ...) {
-        dir_create(path_dir(dest))
-        if (!file_exists(dest)) file.copy(src, dest, copy.date = TRUE)
-    })
+  mutate(
+          src  = path,
+          dest = str_replace(path, sdrive_root, local_root)
+          ) |>
+  pwalk(function(src, dest, ...) {
+          dir_create(path_dir(dest))
+          # file.copy has copy.date arg to keep mtime
+          if (!file_exists(dest)) file.copy(src, dest, copy.date = TRUE)
+          })
 
-# Sys.setFileTime(dest, file_info(src)$modification_time)
+ref_index |>
+  mutate(
+          src  = path,
+          dest = str_replace(path, sdrive_root, local_root)
+          ) |>
+  pwalk(function(src, dest, ...) {
+          Sys.setFileTime(dest, file_info(src)$modification_time)
+          })
+
 
 # -- Step 5: Write ref index ------------------------------------------------
 # fwrite(ref_index, outfile)
